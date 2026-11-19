@@ -486,14 +486,52 @@ impl<'a> Walker<'a> {
                 profile.expression_list_kinds.contains(&kind_of(parent))
                     && parent.named_child_count() == 1
             });
-            let statement = holder.and_then(|list| list.parent()).or(above);
+            // A parenthesised target such as `(a) = 2` puts a wrapper between the
+            // name and the assignment. Climb through those so the write is seen.
+            let mut statement = holder.and_then(|list| list.parent()).or(above);
+            while statement.is_some_and(|parent| profile.transparent_kinds.contains(&kind_of(parent))) {
+                statement = statement.and_then(|parent| parent.parent());
+            }
             let target = |kinds: &[&str]| {
                 statement.is_some_and(|parent| {
                     kinds.contains(&kind_of(parent))
                         && parent.child_by_field_name("left").is_some_and(|left| {
-                            left.id() == node.id() || Some(left.id()) == holder.map(|l| l.id())
+                            left.id() == node.id()
+                                || self.see_through(left).id() == node.id()
+                                || Some(left.id()) == holder.map(|l| l.id())
+                                || holder.is_some_and(|h| self.see_through(left).id() == h.id())
                         })
                 })
+            };
+            // Some grammars keep the parenthesised target as a chain of wrappers
+            // below the `left` field. Walk from the name up to the assignment so a
+            // wrapped target is recognised as a write in those too.
+            let wrapped_target = |kinds: &[&str]| {
+                let mut parent = above;
+                while let Some(p) = parent {
+                    if kinds.contains(&kind_of(p))
+                        && p.child_by_field_name("left").is_some_and(|left| {
+                            let mut inner = left;
+                            loop {
+                                if inner.id() == node.id() {
+                                    return true;
+                                }
+                                let next = self.see_through(inner);
+                                if next.id() == inner.id() {
+                                    return false;
+                                }
+                                inner = next;
+                            }
+                        })
+                    {
+                        return true;
+                    }
+                    if !profile.transparent_kinds.contains(&kind_of(p)) {
+                        break;
+                    }
+                    parent = p.parent();
+                }
+                false
             };
             // A method's name sits in the same field a declaration's does in some
             // grammars, so `rows.add(x)` would read as a write to `add`.
@@ -502,8 +540,10 @@ impl<'a> Walker<'a> {
                     || profile.is_member_access(parent)
                     || profile.markup_kinds.contains(&kind_of(parent))
             });
-            let assigns = target(profile.assignment_kinds);
-            let updates = target(profile.compound_assignment_kinds)
+            let assigns = target(profile.assignment_kinds)
+                || wrapped_target(profile.assignment_kinds);
+            let updates = (target(profile.compound_assignment_kinds)
+                || wrapped_target(profile.compound_assignment_kinds))
                 && operator_of(above.unwrap_or(node), self.source)
                     .is_some_and(|operator| operator.len() > 1 && operator.ends_with('='));
             let wrote = (declares || assigns || updates) && !reaching;

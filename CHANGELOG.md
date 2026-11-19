@@ -9,6 +9,12 @@ them. `tools/release.sh` turns that section into the release notes.
 
 ## Unreleased
 
+### Fixed
+
+- **`dead-store` recognises a parenthesised assignment target.** `(a) = 2` is a write to
+  `a`, so an earlier write to the same local is now reported as dead, as it is without
+  the parentheses. A parenthesised read such as `use((a))` still counts as a read.
+
 ## 0.5.3 — 2026-11-19
 
 ### Changed
